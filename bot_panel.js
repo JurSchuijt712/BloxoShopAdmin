@@ -1,72 +1,113 @@
 const express = require('express');
 const { Client, GatewayIntentBits } = require('discord.js');
-const http = require('http');
-const socketIo = require('socket.io');
 
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server);
+const port = 3000;
+const DISCORD_TOKEN = 'MTM4Mzc2MzA1MDM4MDc4NzcxMg.GWhYJc.sPh2SrkgS7hhJPWUOLYuaNf802dPUQjKyL2uq4';
+const GUILD_ID = '1285341049547657278';
+
+app.use(express.json());
+app.use(express.static('public')); // Serve your HTML
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildBans
+    GatewayIntentBits.GuildMessages
   ]
 });
 
-client.login('MTM4Mzc2MzA1MDM4MDc4NzcxMg.Ge1Agj.Us0Jy95S3m9S2KPVWdEZGKCT4EnFmyFUvq_BVs');
+let guildRef;
+let botStartTime = Date.now();
+let logs = [];
 
-client.once('ready', () => {
+// API endpoints
+app.get('/api/memberCount', async (req, res) => {
+  if (guildRef) {
+    await guildRef.members.fetch(); // Ensure cache is fresh
+    res.json({ memberCount: guildRef.memberCount });
+  } else {
+    res.status(500).json({ error: 'Guild not ready' });
+  }
+});
+
+app.get('/api/banCount', async (req, res) => {
+  if (guildRef) {
+    const bans = await guildRef.bans.fetch();
+    res.json({ banCount: bans.size });
+  } else {
+    res.status(500).json({ error: 'Guild not ready' });
+  }
+});
+
+app.get('/api/uptime', (req, res) => {
+  res.json({ uptimeMs: Date.now() - botStartTime });
+});
+
+app.get('/api/commands', (req, res) => {
+  res.json(['ban', 'kick']); // Extend this as you add more
+});
+
+app.get('/api/logs', (req, res) => {
+  res.json(logs.slice(-20)); // Last 20 logs
+});
+
+app.get('/api/users', async (req, res) => {
+  if (guildRef) {
+    await guildRef.members.fetch();
+    const users = guildRef.members.cache.map(m => ({
+      id: m.id,
+      username: m.user.username
+    }));
+    res.json(users);
+  } else {
+    res.status(500).json({ error: 'Guild not ready' });
+  }
+});
+
+app.post('/api/useCommand', async (req, res) => {
+  const { command, userId } = req.body;
+  try {
+    const member = await guildRef.members.fetch(userId);
+    if (command === 'kick') {
+      await member.kick('Kicked via dashboard');
+      logs.push(`Kicked ${member.user.tag}`);
+      res.json({ message: `Kicked ${member.user.tag}` });
+    } else if (command === 'ban') {
+      await member.ban({ reason: 'Banned via dashboard' });
+      logs.push(`Banned ${member.user.tag}`);
+      res.json({ message: `Banned ${member.user.tag}` });
+    } else {
+      res.status(400).json({ error: 'Unknown command' });
+    }
+  } catch (e) {
+    res.status(500).json({ error: `Failed to execute: ${e.message}` });
+  }
+});
+
+// Start Express server
+app.listen(port, () => {
+  console.log(`Server running at http://localhost:${port}`);
+});
+
+// Start Discord bot
+client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
-
-  const guild = client.guilds.cache.first();
-
-  // Push updates at startup
-  sendUpdates();
-
-  // Optional: Listen to events to auto-push (can also poll periodically)
-  client.on('guildMemberAdd', sendUpdates);
-  client.on('guildMemberRemove', sendUpdates);
+  guildRef = await client.guilds.fetch(GUILD_ID);
+  await guildRef.members.fetch();
+  logs.push('Bot started and guild loaded');
 });
 
-async function sendUpdates() {
-  const guild = client.guilds.cache.first();
-
-  // Live fetch members
-  await guild.members.fetch();
-  const users = guild.members.cache.map(m => ({
-    id: m.user.id,
-    tag: `${m.user.username}#${m.user.discriminator}`
-  }));
-
-  // Live fetch bans
-  const bans = await guild.bans.fetch();
-  const bannedUsers = bans.map(b => ({
-    id: b.user.id,
-    tag: `${b.user.username}#${b.user.discriminator}`
-  }));
-
-  io.emit('update', { users, bans });
-}
-
-// **Hier komt de CSP header erbij**
-app.use((req, res, next) => {
-  res.setHeader("Content-Security-Policy", "default-src 'self'; font-src 'self' https://fonts.gstatic.com; style-src 'self' https://fonts.googleapis.com; script-src 'self';");
-  next();
+client.on('guildMemberAdd', member => {
+  if (member.guild.id === GUILD_ID) {
+    logs.push(`User joined: ${member.user.tag}`);
+  }
 });
 
-app.use(express.static('public'));
-
-io.on('connection', (socket) => {
-  console.log('Client connected');
-  sendUpdates();
-
-  socket.on('disconnect', () => {
-    console.log('Client disconnected');
-  });
+client.on('guildMemberRemove', member => {
+  if (member.guild.id === GUILD_ID) {
+    logs.push(`User left: ${member.user.tag}`);
+  }
 });
 
-server.listen(3000, () => {
-  console.log('Panel running on http://localhost:3000');
-});
+client.login(DISCORD_TOKEN);
